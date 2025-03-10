@@ -1,0 +1,69 @@
+name: OCTO_CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      octopus_package:
+        description: octopus to pack .nupkg
+        default: false
+        required: true
+        type: boolean
+      version:
+        description: octopus package version
+        default: 1.0.0
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+  packages: write
+
+jobs:
+  package:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Install Octopus CLI 🐙
+      uses: OctopusDeploy/install-octopus-cli-action@v3
+      with:
+        version: '*'
+
+    - name: Add NuGet source
+      run: |
+        dotnet nuget add source --password ${{ secrets.GITHUB_TOKEN }} --username chsdevops@cigna.com --store-password-in-clear-text --name github https://nuget.pkg.github.com/zilvertonz/index.json
+
+    - name: Clean workspace
+      run: |
+        if (Test-Path -Path .\dist) { Remove-Item -Recurse -Force .\dist }
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Build project
+      run: npm run build -- --skip-nx-cache
+
+    - name: List files
+      run: ls -la
+
+    - name: Package and push Apps
+      shell: pwsh
+      run: |
+        $packagesPath = "packs"
+        if (!(Test-Path $packagesPath)) {
+          New-Item -ItemType Directory -Path $packagesPath
+        }
+        Get-ChildItem -Path apps -Directory | ForEach-Object {
+          $appName = $_.Name
+          $appPath = $_.FullName
+          $packageName = "RAES-OPS-$appName.${{ inputs.version }}.nupkg"
+          $PackagePath = "$($packagesPath)\$packageName"
+          Write-Output "Packaging $appName from $appPath"
+          & octopus package nuget create --id "RAES-OPS-$appName" --version "${{ inputs.version }}" --base-path "$appPath" --out-folder "$packagesPath" --author "githubaction-Author" --title "GHA" --releaseNotes "Test-release"
+        }
+
+    - name: Push NuGet package
+      run: dotnet nuget push "packs\*.nupkg" --skip-duplicate --api-key ${{ secrets.GITHUB_TOKEN }} --source https://nuget.pkg.github.com/zilvertonz/index.json
